@@ -65,7 +65,7 @@ final class ClientUpdater {
         }
         if (Files.getFileStore(root).getUsableSpace() < appBytes + downloadBytes + 32 * 1024 * 1024L)
             throw new IOException("磁盘空间不足，更新需要约 " + mib(appBytes + downloadBytes) + " MiB 可用空间");
-        String runId = needed.isEmpty() ? null : resumeOrStartRun(release, needed, progress);
+        String runId = downloadBytes == 0 ? null : resumeOrStartRun(release, needed, progress);
         long downloaded = 0;
         final long totalDownload = downloadBytes;
         for (var entry : files.entrySet()) {
@@ -147,6 +147,7 @@ final class ClientUpdater {
                 }
             }
         }
+        if (needed.isEmpty()) return null;
         String runId = startRun(release, needed, progress);
         JsonObject saved = new JsonObject();
         saved.addProperty("run", runId);

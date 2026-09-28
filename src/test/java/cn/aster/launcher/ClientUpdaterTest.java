@@ -106,6 +106,8 @@ public final class ClientUpdaterTest {
             resumed.authorize("test-update-token");
             expect(resumed.resumeOrStartRun("1.0.0.3", pendingFiles, s -> {}).equals("prior-run")
                     && starts.get() == beforeResume, "restart reuses the previous authenticated download run");
+            expect(resumed.resumeOrStartRun("1.0.0.3", new JsonArray(), s -> {}).equals("prior-run")
+                    && starts.get() == beforeResume, "fully cached files retain the run for completion reporting");
             Files.delete(root.resolve("updates/download-run.json"));
             ClientUpdater.deleteTree(root.resolve("app")); Files.move(root.resolve("app.next"), root.resolve("app"));
             Files.delete(root.resolve("updates/ready.ini"));
