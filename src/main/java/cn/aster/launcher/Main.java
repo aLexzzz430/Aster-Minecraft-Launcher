@@ -648,6 +648,9 @@ public final class Main {
             case "LEGACY_CLAIM_REQUIRED" -> "这是旧角色名，首次注册需要管理员提供的认领码";
             case "TOO_MANY_ATTEMPTS" -> "尝试太频繁，请一分钟后重试";
             case "INVALID_INPUT" -> "游戏名或密码格式不正确";
+            case "INVALID_SKIN" -> string(response, "message").isBlank() ? "皮肤文件无效" : string(response, "message");
+            case "UPDATE_SESSION_INVALID" -> "登录已过期，请切换账号并重新登录";
+            case "BODY_TOO_LARGE" -> "皮肤 PNG 不能超过 3 MB";
             default -> "账号后台暂不可用，请稍后重试";
         };
     }
