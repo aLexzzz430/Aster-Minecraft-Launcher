@@ -1,0 +1,158 @@
+{
+  "revision": "20260926-2",
+  "presets": {
+    "smooth": {
+      "name": "低配流畅",
+      "audience": "8 GB 内存 · 核显 / 轻薄本",
+      "summary": "近景 4 区块 · 远景 4 km · 200 FPS 目标",
+      "memoryMb": 3072,
+      "jvmArguments": [
+        "-XX:+UseG1GC"
+      ],
+      "options": {
+        "graphicsPreset": "\"custom\"",
+        "renderDistance": "4",
+        "simulationDistance": "5",
+        "maxFps": "240",
+        "enableVsync": "false",
+        "renderClouds": "\"false\"",
+        "cloudRange": "64",
+        "ao": "false",
+        "cutoutLeaves": "false",
+        "entityDistanceScaling": "0.75",
+        "entityShadows": "false",
+        "particles": "0",
+        "biomeBlendRadius": "0",
+        "mipmapLevels": "2",
+        "improvedTransparency": "false",
+        "weatherRadius": "3",
+        "prioritizeChunkUpdates": "0"
+      },
+      "sodium": {
+        "quality": {
+          "improved_fluid_shaping": false
+        },
+        "performance": {
+          "chunk_builder_threads": 1,
+          "chunk_build_defer_mode": "ALWAYS",
+          "animate_only_visible_textures": true,
+          "use_entity_culling": true,
+          "use_fog_occlusion": true,
+          "use_block_face_culling": true
+        },
+        "advanced": {
+          "cpu_render_ahead_limit": 2
+        }
+      },
+      "horizon": {
+        "quality": "low",
+        "cacheBudgetMb": 64,
+        "workerThreads": 1,
+        "altitudeBoost": false
+      }
+    },
+    "balanced": {
+      "name": "均衡日常",
+      "audience": "8–16 GB 内存 · 主流电脑",
+      "summary": "近景 6 区块 · 远景 8 km · 200 FPS 目标",
+      "memoryMb": 4096,
+      "jvmArguments": [
+        "-XX:+UseZGC",
+        "-XX:+ZGenerational"
+      ],
+      "options": {
+        "graphicsPreset": "\"custom\"",
+        "renderDistance": "6",
+        "simulationDistance": "6",
+        "maxFps": "240",
+        "enableVsync": "false",
+        "renderClouds": "\"false\"",
+        "cloudRange": "128",
+        "ao": "true",
+        "cutoutLeaves": "true",
+        "entityDistanceScaling": "1.0",
+        "entityShadows": "true",
+        "particles": "0",
+        "biomeBlendRadius": "2",
+        "mipmapLevels": "4",
+        "improvedTransparency": "false",
+        "weatherRadius": "5",
+        "prioritizeChunkUpdates": "0"
+      },
+      "sodium": {
+        "quality": {
+          "improved_fluid_shaping": false
+        },
+        "performance": {
+          "chunk_builder_threads": 0,
+          "chunk_build_defer_mode": "ALWAYS",
+          "animate_only_visible_textures": true,
+          "use_entity_culling": true,
+          "use_fog_occlusion": true,
+          "use_block_face_culling": true
+        },
+        "advanced": {
+          "cpu_render_ahead_limit": 3
+        }
+      },
+      "horizon": {
+        "quality": "medium",
+        "cacheBudgetMb": 128,
+        "workerThreads": 2,
+        "altitudeBoost": false
+      }
+    },
+    "quality": {
+      "name": "高配画质",
+      "audience": "16 GB+ 内存 · 独显 / 大屏",
+      "summary": "近景 10 区块 · 远景 16 km · 200 FPS 目标",
+      "memoryMb": 6144,
+      "jvmArguments": [
+        "-XX:+UseZGC",
+        "-XX:+ZGenerational"
+      ],
+      "options": {
+        "graphicsPreset": "\"custom\"",
+        "renderDistance": "10",
+        "simulationDistance": "8",
+        "maxFps": "240",
+        "enableVsync": "false",
+        "renderClouds": "\"false\"",
+        "cloudRange": "128",
+        "ao": "true",
+        "cutoutLeaves": "true",
+        "entityDistanceScaling": "1.25",
+        "entityShadows": "true",
+        "particles": "0",
+        "biomeBlendRadius": "3",
+        "mipmapLevels": "4",
+        "improvedTransparency": "false",
+        "weatherRadius": "10",
+        "prioritizeChunkUpdates": "0"
+      },
+      "sodium": {
+        "quality": {
+          "improved_fluid_shaping": true
+        },
+        "performance": {
+          "chunk_builder_threads": 0,
+          "chunk_build_defer_mode": "ALWAYS",
+          "animate_only_visible_textures": true,
+          "use_entity_culling": true,
+          "use_fog_occlusion": true,
+          "use_block_face_culling": true
+        },
+        "advanced": {
+          "cpu_render_ahead_limit": 3
+        }
+      },
+      "horizon": {
+        "quality": "high",
+        "cacheBudgetMb": 192,
+        "workerThreads": 2,
+        "altitudeBoost": true
+      }
+    }
+  },
+  "targetFps": 200
+}

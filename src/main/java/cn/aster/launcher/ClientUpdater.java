@@ -1,0 +1,133 @@
+package cn.aster.launcher;
+
+import com.google.gson.*;
+import java.io.*;
+import java.net.URI;
+import java.net.http.*;
+import java.nio.file.*;
+import java.time.Duration;
+import java.util.*;
+import java.util.function.Consumer;
+
+/** Downloads immutable release files while the running game keeps using the old app directory. */
+final class ClientUpdater {
+    static final URI FEED = URI.create("https://189.24.77.244/aster-client/manifest.json");
+    static final int BOOTSTRAP_VERSION = 2;
+    private final Path root;
+    private final URI feed;
+    private final HttpClient http = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(12)).build();
+    record Result(boolean ready, String release, long downloadedBytes) {}
+
+    ClientUpdater(Path root) { this(root, FEED); }
+    ClientUpdater(Path root, URI feed) { this.root = root; this.feed = feed; }
+
+    String currentRelease() throws IOException {
+        return read(root.resolve("app/client-manifest.json")).get("release").getAsString();
+    }
+    boolean ready() { return Files.isRegularFile(root.resolve("updates/ready.ini")); }
+
+    Result checkAndStage(Consumer<String> progress) throws Exception {
+        if (ready()) return new Result(true, read(root.resolve("app.next/client-manifest.json")).get("release").getAsString(), 0);
+        progress.accept("正在检查客户端更新…");
+        var response = http.send(HttpRequest.newBuilder(feed).timeout(Duration.ofSeconds(25)).GET().build(),
+                HttpResponse.BodyHandlers.ofString());
+        if (response.statusCode() != 200) throw new IOException("更新服务返回 HTTP " + response.statusCode());
+        JsonObject index = JsonParser.parseString(response.body()).getAsJsonObject();
+        if (index.get("format").getAsInt() != 1 || index.get("bootstrapVersion").getAsInt() > BOOTSTRAP_VERSION)
+            throw new IOException("此版本需要安装新版 AsterRPG.exe");
+        String release = index.get("release").getAsString();
+        if (compareVersions(release, currentRelease()) <= 0) return new Result(false, currentRelease(), 0);
+        JsonObject previous = read(root.resolve("app/update-index.json")).getAsJsonObject("files");
+        JsonObject files = index.getAsJsonObject("files");
+        Path next = root.resolve("app.next"), cache = root.resolve("updates/downloads/" + release);
+        deleteTree(next); Files.createDirectories(next); Files.createDirectories(cache);
+        long downloadBytes = 0, appBytes = 0;
+        for (var entry : files.entrySet()) {
+            Path current = safe(root.resolve("app"), entry.getKey());
+            long size = entry.getValue().getAsJsonObject().get("size").getAsLong();
+            if (size < 0) throw new IOException("更新文件大小无效");
+            appBytes += size;
+            if (!reusable(previous, entry, current)) downloadBytes += size;
+        }
+        if (Files.getFileStore(root).getUsableSpace() < appBytes + downloadBytes + 32 * 1024 * 1024L)
+            throw new IOException("磁盘空间不足，更新需要约 " + mib(appBytes + downloadBytes) + " MiB 可用空间");
+        long downloaded = 0;
+        final long totalDownload = downloadBytes;
+        for (var entry : files.entrySet()) {
+            if (Thread.currentThread().isInterrupted()) throw new InterruptedException();
+            String relative = entry.getKey();
+            Path source = safe(root.resolve("app"), relative), target = safe(next, relative);
+            Files.createDirectories(target.getParent());
+            JsonObject item = entry.getValue().getAsJsonObject();
+            if (reusable(previous, entry, source)) Files.copy(source, target, StandardCopyOption.REPLACE_EXISTING);
+            else {
+                long size = item.get("size").getAsLong(), before = downloaded;
+                URI url = feed.resolve(item.get("url").getAsString());
+                if (!Objects.equals(url.getScheme(), feed.getScheme()) || !Objects.equals(url.getAuthority(), feed.getAuthority()))
+                    throw new IOException("更新下载地址与发布服务不一致");
+                Path partial = safe(cache, relative + ".part");
+                download(url, partial, size, count -> progress.accept("下载更新 " + mib(before + count) + " / " + mib(totalDownload) + " MiB"));
+                Files.copy(partial, target, StandardCopyOption.REPLACE_EXISTING);
+                downloaded += size;
+            }
+        }
+        Files.writeString(next.resolve("update-index.json"), index.toString());
+        JsonObject manifest = read(next.resolve("client-manifest.json"));
+        if (!release.equals(manifest.get("release").getAsString())) throw new IOException("发布版本与客户端版本不一致");
+        new GameInstallation(root, next).checkBundle();
+        Files.writeString(next.resolve("update-release.ini"), "[client]\r\nrelease=" + release + "\r\n");
+        Path marker = root.resolve("updates/ready.tmp");
+        Files.writeString(marker, "[update]\r\nrelease=" + release + "\r\n");
+        Files.move(marker, root.resolve("updates/ready.ini"), StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+        deleteTree(root.resolve("updates/downloads"));
+        return new Result(true, release, downloaded);
+    }
+
+    private boolean reusable(JsonObject previous, Map.Entry<String, JsonElement> entry, Path source) throws IOException {
+        return previous.has(entry.getKey()) && previous.getAsJsonObject(entry.getKey()).get("version")
+                .equals(entry.getValue().getAsJsonObject().get("version")) && Files.isRegularFile(source)
+                && Files.size(source) == entry.getValue().getAsJsonObject().get("size").getAsLong();
+    }
+    private void download(URI uri, Path partial, long size, Consumer<Long> progress) throws Exception {
+        Files.createDirectories(partial.getParent());
+        long offset = Files.exists(partial) ? Files.size(partial) : 0;
+        if (offset > size) { Files.delete(partial); offset = 0; }
+        if (offset == size) { progress.accept(size); return; }
+        var builder = HttpRequest.newBuilder(uri).timeout(Duration.ofMinutes(3)).GET();
+        if (offset > 0) builder.header("Range", "bytes=" + offset + "-");
+        var response = http.send(builder.build(), HttpResponse.BodyHandlers.ofInputStream());
+        try (InputStream input = response.body()) {
+            if (response.statusCode() == 200) offset = 0;
+            else if (response.statusCode() != 206 || !response.headers().firstValue("Content-Range")
+                    .orElse("").startsWith("bytes " + offset + "-")) throw new IOException("更新下载失败：HTTP " + response.statusCode());
+            try (OutputStream output = Files.newOutputStream(partial, StandardOpenOption.CREATE, StandardOpenOption.WRITE,
+                    offset == 0 ? StandardOpenOption.TRUNCATE_EXISTING : StandardOpenOption.APPEND)) {
+                byte[] block = new byte[128 * 1024]; int n; long last = 0;
+                while ((n = input.read(block)) != -1) {
+                    if (Thread.currentThread().isInterrupted()) throw new InterruptedException();
+                    output.write(block, 0, n); offset += n;
+                    if (System.nanoTime() - last > 300_000_000L) { progress.accept(offset); last = System.nanoTime(); }
+                }
+            }
+        }
+        if (offset != size) throw new IOException("下载尚未完成，下次将继续下载");
+    }
+    static Path safe(Path parent, String relative) throws IOException {
+        Path path = parent.resolve(relative).normalize();
+        if (relative.contains("\\") || Path.of(relative).isAbsolute() || !path.startsWith(parent) || path.equals(parent))
+            throw new IOException("无效的更新文件路径");
+        return path;
+    }
+    static int compareVersions(String a, String b) {
+        String[] left = a.split("\\."), right = b.split("\\.");
+        if (left.length != 4 || right.length != 4) throw new IllegalArgumentException("无效的客户端版本");
+        for (int i = 0; i < 4; i++) { int c = Integer.compare(Integer.parseInt(left[i]), Integer.parseInt(right[i])); if (c != 0) return c; }
+        return 0;
+    }
+    static JsonObject read(Path path) throws IOException { return JsonParser.parseString(Files.readString(path)).getAsJsonObject(); }
+    static long mib(long value) { return (value + 1048575) / 1048576; }
+    static void deleteTree(Path path) throws IOException {
+        if (!Files.exists(path)) return;
+        try (var walk = Files.walk(path)) { for (Path file : walk.sorted(Comparator.reverseOrder()).toList()) Files.delete(file); }
+    }
+}
