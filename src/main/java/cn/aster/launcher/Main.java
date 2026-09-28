@@ -5,8 +5,10 @@ import com.google.gson.JsonParser;
 
 import javax.net.ssl.SSLContext;
 import javax.net.ssl.TrustManagerFactory;
+import javax.imageio.ImageIO;
 import javax.swing.*;
 import java.awt.*;
+import java.io.ByteArrayInputStream;
 import java.io.InputStream;
 import java.net.URI;
 import java.net.http.HttpClient;
@@ -22,6 +24,7 @@ import java.security.KeyStore;
 import java.security.cert.CertificateFactory;
 import java.time.Duration;
 import java.util.Arrays;
+import java.util.Base64;
 import java.util.Locale;
 import java.util.regex.Pattern;
 import java.util.concurrent.*;
@@ -101,6 +104,7 @@ public final class Main {
         view.onLogs(this::openLogs);
         view.dashboard.launch.addActionListener(e -> launchGame());
         view.dashboard.logout.addActionListener(e -> switchAccount());
+        view.dashboard.uploadSkin.addActionListener(e -> uploadSkin());
         view.announcements.onOpen(this::openWebsite);
         view.announcements.all.addActionListener(e -> openWebsite(LauncherNews.INDEX));
         if (!authOnly) loadSettings();
@@ -468,14 +472,99 @@ public final class Main {
 
     private void loadAvatar() {
         if (!view.loggedIn()) return;
+        String account = sessionName;
+        String token = sessionUpdateToken;
         try {
-            var image = MinecraftAvatar.defaultHead(root, new GameInstallation(root).minecraftVersion());
-            SwingUtilities.invokeLater(() -> { if (view.loggedIn()) view.dashboard.avatar(image); });
+            if (account == null || token == null) return;
+            JsonObject response = skinRequest("GET", token, null);
+            JsonObject skin = response.has("skin") ? response.getAsJsonObject("skin") : null;
+            var image = skin != null && skin.has("image")
+                    ? MinecraftAvatar.head(ImageIO.read(new ByteArrayInputStream(Base64.getDecoder().decode(skin.get("image").getAsString()))))
+                    : MinecraftAvatar.defaultHead(root, new GameInstallation(root).minecraftVersion());
+            String status = response.has("status") ? response.get("status").getAsString() : "ready";
+            String note = "processing".equals(status) ? "皮肤正在生成签名纹理…"
+                    : "failed".equals(status) ? "上传失败，请检查图片后重试"
+                    : skin != null ? "自定义皮肤已同步到游戏服务器" : "默认皮肤 · 可上传 64×64 PNG";
+            SwingUtilities.invokeLater(() -> {
+                if (view.loggedIn() && account.equals(sessionName)) {
+                    view.dashboard.avatar(image);
+                    view.dashboard.skinStatus(note);
+                }
+            });
         } catch (Exception error) {
             SwingUtilities.invokeLater(() -> {
-                if (view.loggedIn()) view.dashboard.avatarUnavailable("默认皮肤资源无法读取");
+                if (view.loggedIn() && account.equals(sessionName))
+                    view.dashboard.skinStatus("皮肤暂时无法读取：" + error.getMessage());
             });
         }
+    }
+
+    private JsonObject skinRequest(String method, String token, JsonObject body) throws Exception {
+        HttpRequest.Builder request = HttpRequest.newBuilder(API.resolve("/v1/skin"))
+                .timeout(Duration.ofSeconds(30)).header("Authorization", "Bearer " + token);
+        if ("POST".equals(method)) request.header("Content-Type", "application/json; charset=utf-8")
+                .POST(HttpRequest.BodyPublishers.ofString(body.toString(), StandardCharsets.UTF_8));
+        else request.GET();
+        HttpResponse<String> response = http().send(request.build(), HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+        JsonObject result = JsonParser.parseString(response.body()).getAsJsonObject();
+        if (response.statusCode() != 200 && response.statusCode() != 202)
+            throw new IllegalStateException(message(result));
+        return result;
+    }
+
+    private void uploadSkin() {
+        if (!view.loggedIn() || sessionUpdateToken == null || maintaining) return;
+        JFileChooser chooser = new JFileChooser();
+        chooser.setDialogTitle("选择 Minecraft 皮肤 PNG（64×64 或 64×32）");
+        chooser.setFileFilter(new javax.swing.filechooser.FileNameExtensionFilter("PNG 皮肤", "png"));
+        if (chooser.showOpenDialog(frame) != JFileChooser.APPROVE_OPTION) return;
+        Path file = chooser.getSelectedFile().toPath();
+        String[] variants = {"经典模型（宽手臂）", "纤细模型（窄手臂）"};
+        int selected = JOptionPane.showOptionDialog(frame, "请选择皮肤手臂模型", "角色皮肤",
+                JOptionPane.DEFAULT_OPTION, JOptionPane.QUESTION_MESSAGE, null, variants, variants[0]);
+        if (selected < 0) return;
+        String account = sessionName, token = sessionUpdateToken;
+        view.dashboard.uploadSkin.setEnabled(false);
+        view.dashboard.skinStatus("正在上传皮肤…");
+        new SwingWorker<JsonObject, String>() {
+            @Override protected JsonObject doInBackground() throws Exception {
+                byte[] png = Files.readAllBytes(file);
+                if (png.length > 3 * 1024 * 1024) throw new IllegalArgumentException("皮肤 PNG 不能超过 3 MB");
+                MinecraftAvatar.head(ImageIO.read(new ByteArrayInputStream(png)));
+                JsonObject body = new JsonObject();
+                body.addProperty("variant", selected == 0 ? "classic" : "slim");
+                body.addProperty("image", Base64.getEncoder().encodeToString(png));
+                skinRequest("POST", token, body);
+                publish("正在生成游戏可用的签名皮肤…");
+                long deadline = System.currentTimeMillis() + 125_000;
+                while (System.currentTimeMillis() < deadline) {
+                    Thread.sleep(3000);
+                    JsonObject state = skinRequest("GET", token, null);
+                    String status = state.get("status").getAsString();
+                    if (status.equals("ready")) return state;
+                    if (status.equals("failed")) throw new IllegalStateException("皮肤生成失败，请检查 PNG 后重试");
+                }
+                throw new IllegalStateException("皮肤服务仍在处理，请稍后查看启动页");
+            }
+            @Override protected void process(java.util.List<String> notes) {
+                if (account.equals(sessionName)) view.dashboard.skinStatus(notes.getLast());
+            }
+            @Override protected void done() {
+                view.dashboard.uploadSkin.setEnabled(true);
+                if (!account.equals(sessionName)) return;
+                try {
+                    JsonObject result = get();
+                    JsonObject skin = result.getAsJsonObject("skin");
+                    var image = MinecraftAvatar.head(ImageIO.read(new ByteArrayInputStream(
+                            Base64.getDecoder().decode(skin.get("image").getAsString()))));
+                    view.dashboard.avatar(image);
+                    view.dashboard.skinStatus("自定义皮肤已同步到游戏服务器");
+                } catch (Exception error) {
+                    Throwable cause = error.getCause() == null ? error : error.getCause();
+                    view.dashboard.skinStatus("皮肤上传未完成：" + cause.getMessage());
+                }
+            }
+        }.execute();
     }
 
     private void openWebsite(URI uri) {

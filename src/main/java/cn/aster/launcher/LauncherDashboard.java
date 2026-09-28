@@ -13,14 +13,15 @@ final class LauncherDashboard extends JPanel {
     final LauncherView.Action logout = new LauncherView.Action("切换账号", "", false);
     final LauncherView.Action location = new LauncherView.Action("打开位置", "", false);
     final LauncherView.Action changeLocation = new LauncherView.Action("更改位置", "", false);
+    final LauncherView.Action uploadSkin = new LauncherView.Action("上传皮肤", "", false);
     private final JLabel heading = LauncherView.label("准备进入游戏", 29, TEXT, true);
     private final JLabel account = LauncherView.label("已登录", 12, GOLD, false);
     private final JLabel server = LauncherView.label("正在读取服务器状态…", 17, TEXT, true);
     private final JLabel players = LauncherView.label("", 12, MUTED, false);
     private final JLabel gameVersion = LauncherView.label("游戏版本 · 读取中", 14, TEXT, false);
     private final JLabel clientVersion = LauncherView.label("客户端版本 · 读取中", 12, MUTED, false);
-    private final JLabel skin = LauncherView.label("离线服默认外观预览", 14, TEXT, true);
-    private final JLabel skinNote = LauncherView.label("自定义皮肤尚未接入服务器", 11, MUTED, false);
+    private final JLabel skin = LauncherView.label("角色外观", 14, TEXT, true);
+    private final JLabel skinNote = LauncherView.label("正在读取皮肤…", 11, MUTED, false);
     private final JLabel path = LauncherView.label("读取安装位置…", 11, MUTED, false);
     private final Avatar avatar = new Avatar();
     private boolean updateReady, working;
@@ -28,7 +29,7 @@ final class LauncherDashboard extends JPanel {
     LauncherDashboard() {
         setOpaque(false); setLayout(null);
         for (Component component : new Component[]{heading, account, server, players, gameVersion, clientVersion,
-                skin, skinNote, path, avatar, launch, logout, location, changeLocation}) add(component);
+                skin, skinNote, path, avatar, uploadSkin, launch, logout, location, changeLocation}) add(component);
         launch.getAccessibleContext().setAccessibleName("启动 AsterRPG 游戏");
         logout.getAccessibleContext().setAccessibleName("退出当前游戏账号并返回登录页");
     }
@@ -48,6 +49,7 @@ final class LauncherDashboard extends JPanel {
                 : "无法读取列表状态；仍可尝试启动游戏");
     }
     void avatar(BufferedImage image) { avatar.image = image; avatar.repaint(); }
+    void skinStatus(String message) { skinNote.setText(message); }
     void avatarUnavailable(String reason) {
         avatar.image = null; avatar.repaint();
         skinNote.setText(reason);
@@ -59,6 +61,7 @@ final class LauncherDashboard extends JPanel {
         logout.setEnabled(!value);
         location.setEnabled(!value);
         changeLocation.setEnabled(!value);
+        uploadSkin.setEnabled(!value);
     }
     private void refreshLaunch(String detail) {
         launch.setEnabled(!working && !updateReady);
@@ -77,6 +80,7 @@ final class LauncherDashboard extends JPanel {
         avatar.setBounds(0, 310, 78, 78);
         skin.setBounds(98, 315, w - 98, 28);
         skinNote.setBounds(98, 344, w - 98, 36);
+        uploadSkin.setBounds(98, 372, 120, 30);
         path.setBounds(0, 431, w, 22);
         location.setBounds(0, 459, 132, 31);
         changeLocation.setBounds(140, 459, 132, 31);
