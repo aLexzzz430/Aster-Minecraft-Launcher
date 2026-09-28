@@ -11,15 +11,17 @@ import java.util.function.Consumer;
 
 /** Downloads immutable release files while the running game keeps using the old app directory. */
 final class ClientUpdater {
-    static final URI FEED = URI.create("https://189.24.77.244/aster-client/manifest.json");
+    static final URI FEED = URI.create("https://189.24.77.244/aster-client/v2/manifest.json");
     static final int BOOTSTRAP_VERSION = 2;
     private final Path root;
     private final URI feed;
     private final HttpClient http = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(12)).build();
+    private volatile String updateToken;
     record Result(boolean ready, String release, long downloadedBytes) {}
 
     ClientUpdater(Path root) { this(root, FEED); }
     ClientUpdater(Path root, URI feed) { this.root = root; this.feed = feed; }
+    void authorize(String token) { updateToken = token == null || token.isBlank() ? null : token; }
 
     String currentRelease() throws IOException {
         return read(root.resolve("app/client-manifest.json")).get("release").getAsString();
@@ -27,11 +29,14 @@ final class ClientUpdater {
     boolean ready() { return Files.isRegularFile(root.resolve("updates/ready.ini")); }
 
     Result checkAndStage(Consumer<String> progress) throws Exception {
+        if (updateToken == null) throw new IOException("请先登录游戏账号，再检查客户端更新");
+        try { sendPendingCompletion(); }
+        catch (Exception error) { progress.accept("正在保留上次下载统计，稍后重试补报"); }
         if (ready()) return new Result(true, read(root.resolve("app.next/client-manifest.json")).get("release").getAsString(), 0);
         progress.accept("正在检查客户端更新…");
-        var response = http.send(HttpRequest.newBuilder(feed).timeout(Duration.ofSeconds(25)).GET().build(),
+        var response = http.send(request(feed).timeout(Duration.ofSeconds(25)).GET().build(),
                 HttpResponse.BodyHandlers.ofString());
-        if (response.statusCode() != 200) throw new IOException("更新服务返回 HTTP " + response.statusCode());
+        if (response.statusCode() != 200) throw responseError(response.statusCode());
         JsonObject index = JsonParser.parseString(response.body()).getAsJsonObject();
         if (index.get("format").getAsInt() != 1 || index.get("bootstrapVersion").getAsInt() > BOOTSTRAP_VERSION)
             throw new IOException("此版本需要安装新版 AsterRPG.exe");
@@ -42,15 +47,22 @@ final class ClientUpdater {
         Path next = root.resolve("app.next"), cache = root.resolve("updates/downloads/" + release);
         deleteTree(next); Files.createDirectories(next); Files.createDirectories(cache);
         long downloadBytes = 0, appBytes = 0;
+        JsonArray needed = new JsonArray();
         for (var entry : files.entrySet()) {
             Path current = safe(root.resolve("app"), entry.getKey());
             long size = entry.getValue().getAsJsonObject().get("size").getAsLong();
             if (size < 0) throw new IOException("更新文件大小无效");
             appBytes += size;
-            if (!reusable(previous, entry, current)) downloadBytes += size;
+            if (!reusable(previous, entry, current)) {
+                downloadBytes += size;
+                Path partial = safe(cache, entry.getKey() + ".part");
+                if (!Files.isRegularFile(partial) || Files.size(partial) != size)
+                    needed.add(entry.getValue().getAsJsonObject().get("url").getAsString());
+            }
         }
         if (Files.getFileStore(root).getUsableSpace() < appBytes + downloadBytes + 32 * 1024 * 1024L)
             throw new IOException("磁盘空间不足，更新需要约 " + mib(appBytes + downloadBytes) + " MiB 可用空间");
+        String runId = needed.isEmpty() ? null : startRun(release, needed, progress);
         long downloaded = 0;
         final long totalDownload = downloadBytes;
         for (var entry : files.entrySet()) {
@@ -66,7 +78,8 @@ final class ClientUpdater {
                 if (!Objects.equals(url.getScheme(), feed.getScheme()) || !Objects.equals(url.getAuthority(), feed.getAuthority()))
                     throw new IOException("更新下载地址与发布服务不一致");
                 Path partial = safe(cache, relative + ".part");
-                download(url, partial, size, count -> progress.accept("下载更新 " + mib(before + count) + " / " + mib(totalDownload) + " MiB"));
+                download(url, partial, size, runId,
+                        count -> progress.accept("下载更新 " + mib(before + count) + " / " + mib(totalDownload) + " MiB"));
                 Files.copy(partial, target, StandardCopyOption.REPLACE_EXISTING);
                 downloaded += size;
             }
@@ -80,7 +93,49 @@ final class ClientUpdater {
         Files.writeString(marker, "[update]\r\nrelease=" + release + "\r\n");
         Files.move(marker, root.resolve("updates/ready.ini"), StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
         deleteTree(root.resolve("updates/downloads"));
+        if (runId != null) {
+            Path pending = root.resolve("updates/complete-pending.json");
+            Files.writeString(pending, "{\"run\":\"" + runId + "\"}");
+            try { sendPendingCompletion(); }
+            catch (Exception error) { progress.accept("更新已准备好，下载统计将在下次登录后补报"); }
+        }
         return new Result(true, release, downloaded);
+    }
+
+    private HttpRequest.Builder request(URI uri) throws IOException {
+        String token = updateToken;
+        if (token == null) throw new IOException("请先登录游戏账号，再检查客户端更新");
+        return HttpRequest.newBuilder(uri).header("Authorization", "Bearer " + token);
+    }
+
+    private static IOException responseError(int status) {
+        return new IOException(status == 401 ? "更新登录凭证已过期，请切换账号重新登录" : "更新服务返回 HTTP " + status);
+    }
+
+    private String startRun(String release, JsonArray needed, Consumer<String> progress) throws Exception {
+        JsonObject body = new JsonObject();
+        body.addProperty("release", release);
+        body.add("files", needed);
+        var response = http.send(request(feed.resolve("start")).timeout(Duration.ofSeconds(25))
+                .header("Content-Type", "application/json").POST(HttpRequest.BodyPublishers.ofString(body.toString())).build(),
+                HttpResponse.BodyHandlers.ofString());
+        if (response.statusCode() != 200) throw responseError(response.statusCode());
+        JsonObject result = JsonParser.parseString(response.body()).getAsJsonObject();
+        int number = result.get("downloadNumber").getAsInt();
+        int reduction = result.get("speedReductionPercent").getAsInt();
+        if (reduction > 0) progress.accept("此版本第 " + number + " 次下载，速度降低 " + reduction + "%");
+        return result.get("run").getAsString();
+    }
+
+    private void sendPendingCompletion() throws Exception {
+        Path pending = root.resolve("updates/complete-pending.json");
+        if (!Files.isRegularFile(pending)) return;
+        String body = Files.readString(pending);
+        var response = http.send(request(feed.resolve("complete")).timeout(Duration.ofSeconds(15))
+                .header("Content-Type", "application/json").POST(HttpRequest.BodyPublishers.ofString(body)).build(),
+                HttpResponse.BodyHandlers.discarding());
+        if (response.statusCode() != 200) throw responseError(response.statusCode());
+        Files.deleteIfExists(pending);
     }
 
     private boolean reusable(JsonObject previous, Map.Entry<String, JsonElement> entry, Path source) throws IOException {
@@ -88,12 +143,13 @@ final class ClientUpdater {
                 .equals(entry.getValue().getAsJsonObject().get("version")) && Files.isRegularFile(source)
                 && Files.size(source) == entry.getValue().getAsJsonObject().get("size").getAsLong();
     }
-    private void download(URI uri, Path partial, long size, Consumer<Long> progress) throws Exception {
+    private void download(URI uri, Path partial, long size, String runId, Consumer<Long> progress) throws Exception {
         Files.createDirectories(partial.getParent());
         long offset = Files.exists(partial) ? Files.size(partial) : 0;
         if (offset > size) { Files.delete(partial); offset = 0; }
         if (offset == size) { progress.accept(size); return; }
-        var builder = HttpRequest.newBuilder(uri).timeout(Duration.ofMinutes(3)).GET();
+        if (runId == null) throw new IOException("更新下载会话未建立");
+        var builder = request(uri).header("X-Aster-Update-Run", runId).timeout(Duration.ofHours(3)).GET();
         if (offset > 0) builder.header("Range", "bytes=" + offset + "-");
         var response = http.send(builder.build(), HttpResponse.BodyHandlers.ofInputStream());
         try (InputStream input = response.body()) {

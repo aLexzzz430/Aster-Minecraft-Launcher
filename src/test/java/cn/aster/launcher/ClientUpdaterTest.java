@@ -40,12 +40,40 @@ public final class ClientUpdaterTest {
         JsonObject targetIndex = index(next, "1.0.0.2");
         targetIndex.addProperty("bootstrapVersion", 2);
         HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
-        AtomicInteger resumes = new AtomicInteger(), requests = new AtomicInteger();
+        AtomicInteger resumes = new AtomicInteger(), requests = new AtomicInteger(), starts = new AtomicInteger(), completions = new AtomicInteger();
         server.createContext("/manifest.json", exchange -> {
+            if (!"Bearer test-update-token".equals(exchange.getRequestHeaders().getFirst("Authorization"))) {
+                exchange.sendResponseHeaders(401, -1); exchange.close(); return;
+            }
             byte[] b = targetIndex.toString().getBytes(StandardCharsets.UTF_8); exchange.sendResponseHeaders(200, b.length);
             exchange.getResponseBody().write(b); exchange.close();
         });
+        server.createContext("/start", exchange -> {
+            if (!"Bearer test-update-token".equals(exchange.getRequestHeaders().getFirst("Authorization"))) {
+                exchange.sendResponseHeaders(401, -1); exchange.close(); return;
+            }
+            JsonObject body = JsonParser.parseString(new String(exchange.getRequestBody().readAllBytes())).getAsJsonObject();
+            String requested = body.get("release").getAsString();
+            expect((requested.equals("1.0.0.2") && body.getAsJsonArray("files").size() == 2)
+                    || (requested.equals("1.0.0.3") && body.getAsJsonArray("files").size() > 0),
+                    "update session only includes needed release files");
+            starts.incrementAndGet();
+            byte[] b = "{\"run\":\"test-run\",\"downloadNumber\":1,\"speedReductionPercent\":0}".getBytes(StandardCharsets.UTF_8);
+            exchange.sendResponseHeaders(200, b.length); exchange.getResponseBody().write(b); exchange.close();
+        });
+        server.createContext("/complete", exchange -> {
+            expect("Bearer test-update-token".equals(exchange.getRequestHeaders().getFirst("Authorization")),
+                    "completion is authenticated");
+            JsonObject body = JsonParser.parseString(new String(exchange.getRequestBody().readAllBytes())).getAsJsonObject();
+            expect(body.get("run").getAsString().equals("test-run"), "completion references update run");
+            completions.incrementAndGet();
+            byte[] b = "{\"ok\":true}".getBytes(StandardCharsets.UTF_8);
+            exchange.sendResponseHeaders(200, b.length); exchange.getResponseBody().write(b); exchange.close();
+        });
         server.createContext("/files/", exchange -> {
+            expect("Bearer test-update-token".equals(exchange.getRequestHeaders().getFirst("Authorization"))
+                    && "test-run".equals(exchange.getRequestHeaders().getFirst("X-Aster-Update-Run")),
+                    "file downloads require account authorization and update run");
             requests.incrementAndGet();
             String path = exchange.getRequestURI().getPath().substring(7);
             byte[] body = next.get(path).getBytes(StandardCharsets.UTF_8);
@@ -59,8 +87,12 @@ public final class ClientUpdaterTest {
         try {
             write(root.resolve("updates/downloads/1.0.0.2/game-content/mods/core.jar.part"), "new-mod-");
             var updater = new ClientUpdater(root, URI.create("http://127.0.0.1:" + server.getAddress().getPort() + "/manifest.json"));
+            try { updater.checkAndStage(s -> {}); throw new AssertionError("login required before update check"); }
+            catch (java.io.IOException expected) { expect(expected.getMessage().contains("登录"), "pre-login update is denied"); }
+            updater.authorize("test-update-token");
             var result = updater.checkAndStage(s -> {});
-            expect(result.ready() && resumes.get() == 1 && requests.get() == 2, "only two changed files download; partial resumes");
+            expect(result.ready() && resumes.get() == 1 && requests.get() == 2 && starts.get() == 1 && completions.get() == 1,
+                    "one authenticated update run downloads only two changed files and reports completion");
             expect(Files.readString(root.resolve("app/game-content/mods/core.jar")).equals("oldmod"), "running app remains untouched");
             expect(Files.readString(root.resolve("app.next/game-content/mods/core.jar")).equals(next.get("game-content/mods/core.jar")), "staged mod is complete");
             expect(Files.readString(root.resolve("game/options.txt")).equals("player options"), "player settings untouched");

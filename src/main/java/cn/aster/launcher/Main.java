@@ -40,6 +40,7 @@ public final class Main {
     private FileLock lock;
     private ClientUpdater updater;
     private String sessionName, sessionTicket, serverAddress;
+    private volatile String sessionUpdateToken;
     private char[] sessionSecret;
     private long ticketIssuedAt;
     private volatile boolean maintaining;
@@ -153,6 +154,8 @@ public final class Main {
                     sessionName = result.name();
                     sessionSecret = secret;
                     sessionTicket = result.ticket();
+                    sessionUpdateToken = result.updateToken();
+                    if (updater != null) updater.authorize(sessionUpdateToken);
                     ticketIssuedAt = System.currentTimeMillis();
                     try {
                         new LauncherPreferences(sessionName, view.performancePreset(), view.memoryMb(),
@@ -163,6 +166,9 @@ public final class Main {
                     dashboardTasks.execute(Main.this::refreshServerStatus);
                     dashboardTasks.execute(Main.this::refreshNews);
                     dashboardTasks.execute(Main.this::loadAvatar);
+                    try {
+                        if (updater != null && ClientMaintenance.automatic(root)) checkUpdates();
+                    } catch (Exception error) { updateStatus("更新设置读取失败：" + error.getMessage(), false, false); }
                 } catch (Exception error) {
                     clear(secret);
                     Throwable cause = error.getCause() == null ? error : error.getCause();
@@ -172,7 +178,7 @@ public final class Main {
         }.execute();
     }
 
-    private record LoginResult(String name, String ticket) {}
+    private record LoginResult(String name, String ticket, String updateToken) {}
 
     private LoginResult requestTicket(String username, char[] secret, boolean registering, String claimCode) throws Exception {
         JsonObject body = new JsonObject();
@@ -185,11 +191,16 @@ public final class Main {
         HttpResponse<String> response = http().send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
         JsonObject result = JsonParser.parseString(response.body()).getAsJsonObject();
         if (response.statusCode() != 200) throw new IllegalStateException(message(result));
-        return new LoginResult(result.get("name").getAsString(), result.get("ticket").getAsString());
+        return new LoginResult(result.get("name").getAsString(), result.get("ticket").getAsString(),
+                string(result, "updateToken"));
     }
 
     private void launchGame() {
         if (!view.loggedIn() || view.busy() || maintaining || sessionSecret == null) return;
+        if (updating.get()) {
+            view.showNotice("正在检查或下载客户端更新，请等待完成后开始游戏。", false);
+            return;
+        }
         if (updater != null && updater.ready()) {
             view.showNotice("新版已准备好，请先点击“重启并更新”。", false);
             view.homeUpdate.apply.requestFocusInWindow();
@@ -214,6 +225,8 @@ public final class Main {
                     LoginResult renewed = requestTicket(name, secret, false, "");
                     if (!name.equals(renewed.name())) throw new IllegalStateException("登录账号已改变，请切换账号后重试");
                     launchTicket = renewed.ticket();
+                    sessionUpdateToken = renewed.updateToken();
+                    if (updater != null) updater.authorize(sessionUpdateToken);
                 }
                 Path ticketFile = installation.gameDirectory().resolve("aster-auth-ticket.txt");
                 Files.writeString(ticketFile, name + "\n" + launchTicket + "\n", StandardCharsets.UTF_8);
@@ -347,13 +360,18 @@ public final class Main {
         view.homeUpdate.check.addActionListener(e -> checkUpdates());
         view.homeUpdate.apply.addActionListener(e -> restart(root));
         updates.scheduleWithFixedDelay(() -> {
-            try { if (ClientMaintenance.automatic(root)) checkUpdates(); }
+            try { if (sessionUpdateToken != null && ClientMaintenance.automatic(root)) checkUpdates(); }
             catch (Exception error) { updateStatus("更新设置读取失败：" + error.getMessage(), false, false); }
-        }, 1, 900, TimeUnit.SECONDS);
+        }, 900, 900, TimeUnit.SECONDS);
         if (updater.ready()) updateStatus("已下载新版，下次启动生效", false, true);
     }
 
     private void checkUpdates() {
+        if (sessionUpdateToken == null || sessionUpdateToken.isBlank()) {
+            updateStatus(view.loggedIn() ? "账号服务尚未提供更新授权，请稍后重试" : "请先登录游戏账号，再检查客户端更新",
+                    false, updater != null && updater.ready());
+            return;
+        }
         if (maintaining || !updating.compareAndSet(false, true)) return;
         updateStatus("正在检查更新…", true, false);
         updates.execute(() -> {
@@ -466,9 +484,10 @@ public final class Main {
     }
 
     private void switchAccount() {
-        if (view.busy() || maintaining) return;
+        if (view.busy() || maintaining || updating.get()) return;
         clear(sessionSecret);
-        sessionSecret = null; sessionTicket = null; sessionName = null; ticketIssuedAt = 0;
+        sessionSecret = null; sessionTicket = null; sessionName = null; sessionUpdateToken = null; ticketIssuedAt = 0;
+        if (updater != null) updater.authorize(null);
         view.returnToLogin();
     }
     private void createShortcut(boolean desktop) {
@@ -513,6 +532,7 @@ public final class Main {
     }
     private void exit() {
         clear(sessionSecret); sessionSecret = null;
+        sessionUpdateToken = null;
         updates.shutdownNow(); dashboardTasks.shutdownNow(); frame.dispose(); releaseLock(); System.exit(0);
     }
 
