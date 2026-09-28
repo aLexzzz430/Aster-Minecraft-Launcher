@@ -98,6 +98,15 @@ public final class ClientUpdaterTest {
             expect(Files.readString(root.resolve("game/options.txt")).equals("player options"), "player settings untouched");
             int downloaded = requests.get(); updater.checkAndStage(s -> {});
             expect(downloaded == requests.get(), "prepared update reused without redownload");
+            JsonArray pendingFiles = new JsonArray(); pendingFiles.add("files/game-content/mods/core.jar");
+            write(root.resolve("updates/download-run.json"), "{\"run\":\"prior-run\",\"release\":\"1.0.0.3\","
+                    + "\"files\":[\"files/game-content/mods/core.jar\"],\"createdAt\":" + System.currentTimeMillis() + "}");
+            int beforeResume = starts.get();
+            var resumed = new ClientUpdater(root, URI.create("http://127.0.0.1:" + server.getAddress().getPort() + "/manifest.json"));
+            resumed.authorize("test-update-token");
+            expect(resumed.resumeOrStartRun("1.0.0.3", pendingFiles, s -> {}).equals("prior-run")
+                    && starts.get() == beforeResume, "restart reuses the previous authenticated download run");
+            Files.delete(root.resolve("updates/download-run.json"));
             ClientUpdater.deleteTree(root.resolve("app")); Files.move(root.resolve("app.next"), root.resolve("app"));
             Files.delete(root.resolve("updates/ready.ini"));
             expect(!updater.checkAndStage(s -> {}).ready(), "current release does not reinstall itself");

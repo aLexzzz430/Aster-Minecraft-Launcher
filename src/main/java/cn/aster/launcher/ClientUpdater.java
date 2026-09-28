@@ -41,7 +41,10 @@ final class ClientUpdater {
         if (index.get("format").getAsInt() != 1 || index.get("bootstrapVersion").getAsInt() > BOOTSTRAP_VERSION)
             throw new IOException("此版本需要安装新版 AsterRPG.exe");
         String release = index.get("release").getAsString();
-        if (compareVersions(release, currentRelease()) <= 0) return new Result(false, currentRelease(), 0);
+        if (compareVersions(release, currentRelease()) <= 0) {
+            Files.deleteIfExists(root.resolve("updates/download-run.json"));
+            return new Result(false, currentRelease(), 0);
+        }
         JsonObject previous = read(root.resolve("app/update-index.json")).getAsJsonObject("files");
         JsonObject files = index.getAsJsonObject("files");
         Path next = root.resolve("app.next"), cache = root.resolve("updates/downloads/" + release);
@@ -62,7 +65,7 @@ final class ClientUpdater {
         }
         if (Files.getFileStore(root).getUsableSpace() < appBytes + downloadBytes + 32 * 1024 * 1024L)
             throw new IOException("磁盘空间不足，更新需要约 " + mib(appBytes + downloadBytes) + " MiB 可用空间");
-        String runId = needed.isEmpty() ? null : startRun(release, needed, progress);
+        String runId = needed.isEmpty() ? null : resumeOrStartRun(release, needed, progress);
         long downloaded = 0;
         final long totalDownload = downloadBytes;
         for (var entry : files.entrySet()) {
@@ -93,6 +96,7 @@ final class ClientUpdater {
         Files.writeString(marker, "[update]\r\nrelease=" + release + "\r\n");
         Files.move(marker, root.resolve("updates/ready.ini"), StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
         deleteTree(root.resolve("updates/downloads"));
+        Files.deleteIfExists(root.resolve("updates/download-run.json"));
         if (runId != null) {
             Path pending = root.resolve("updates/complete-pending.json");
             Files.writeString(pending, "{\"run\":\"" + runId + "\"}");
@@ -127,6 +131,33 @@ final class ClientUpdater {
         return result.get("run").getAsString();
     }
 
+    String resumeOrStartRun(String release, JsonArray needed, Consumer<String> progress) throws Exception {
+        Path marker = root.resolve("updates/download-run.json");
+        if (Files.isRegularFile(marker)) {
+            JsonObject saved = read(marker);
+            if (release.equals(saved.get("release").getAsString())
+                    && System.currentTimeMillis() - saved.get("createdAt").getAsLong() < 23 * 60 * 60_000L) {
+                Set<String> allowed = new HashSet<>();
+                saved.getAsJsonArray("files").forEach(item -> allowed.add(item.getAsString()));
+                boolean sameRun = true;
+                for (var item : needed) if (!allowed.contains(item.getAsString())) sameRun = false;
+                if (sameRun) {
+                    progress.accept("继续上次未完成的下载");
+                    return saved.get("run").getAsString();
+                }
+            }
+        }
+        String runId = startRun(release, needed, progress);
+        JsonObject saved = new JsonObject();
+        saved.addProperty("run", runId);
+        saved.addProperty("release", release);
+        saved.add("files", needed);
+        saved.addProperty("createdAt", System.currentTimeMillis());
+        Files.createDirectories(marker.getParent());
+        Files.writeString(marker, saved.toString());
+        return runId;
+    }
+
     private void sendPendingCompletion() throws Exception {
         Path pending = root.resolve("updates/complete-pending.json");
         if (!Files.isRegularFile(pending)) return;
@@ -153,6 +184,11 @@ final class ClientUpdater {
         if (offset > 0) builder.header("Range", "bytes=" + offset + "-");
         var response = http.send(builder.build(), HttpResponse.BodyHandlers.ofInputStream());
         try (InputStream input = response.body()) {
+            if (response.statusCode() == 401 || response.statusCode() == 429) {
+                Files.deleteIfExists(root.resolve("updates/download-run.json"));
+                throw new IOException(response.statusCode() == 429
+                        ? "下载会话已用尽，请重新检查更新" : "更新登录凭证已过期，请切换账号重新登录");
+            }
             if (response.statusCode() == 200) offset = 0;
             else if (response.statusCode() != 206 || !response.headers().firstValue("Content-Range")
                     .orElse("").startsWith("bytes " + offset + "-")) throw new IOException("更新下载失败：HTTP " + response.statusCode());
