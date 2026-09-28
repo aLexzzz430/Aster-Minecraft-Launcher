@@ -155,7 +155,7 @@ public final class Main {
                     sessionSecret = secret;
                     sessionTicket = result.ticket();
                     sessionUpdateToken = result.updateToken();
-                    if (updater != null) updater.authorize(sessionUpdateToken);
+                    if (updater != null) updater.authorize(sessionUpdateToken, sessionName);
                     ticketIssuedAt = System.currentTimeMillis();
                     try {
                         new LauncherPreferences(sessionName, view.performancePreset(), view.memoryMb(),
@@ -226,7 +226,7 @@ public final class Main {
                     if (!name.equals(renewed.name())) throw new IllegalStateException("登录账号已改变，请切换账号后重试");
                     launchTicket = renewed.ticket();
                     sessionUpdateToken = renewed.updateToken();
-                    if (updater != null) updater.authorize(sessionUpdateToken);
+                    if (updater != null) updater.authorize(sessionUpdateToken, sessionName);
                 }
                 Path ticketFile = installation.gameDirectory().resolve("aster-auth-ticket.txt");
                 Files.writeString(ticketFile, name + "\n" + launchTicket + "\n", StandardCharsets.UTF_8);
@@ -487,7 +487,7 @@ public final class Main {
         if (view.busy() || maintaining || updating.get()) return;
         clear(sessionSecret);
         sessionSecret = null; sessionTicket = null; sessionName = null; sessionUpdateToken = null; ticketIssuedAt = 0;
-        if (updater != null) updater.authorize(null);
+        if (updater != null) updater.authorize(null, null);
         view.returnToLogin();
     }
     private void createShortcut(boolean desktop) {

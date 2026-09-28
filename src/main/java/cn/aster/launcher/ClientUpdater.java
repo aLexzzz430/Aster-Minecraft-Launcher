@@ -17,11 +17,15 @@ final class ClientUpdater {
     private final URI feed;
     private final HttpClient http = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(12)).build();
     private volatile String updateToken;
+    private volatile String updateAccount;
     record Result(boolean ready, String release, long downloadedBytes) {}
 
     ClientUpdater(Path root) { this(root, FEED); }
     ClientUpdater(Path root, URI feed) { this.root = root; this.feed = feed; }
-    void authorize(String token) { updateToken = token == null || token.isBlank() ? null : token; }
+    void authorize(String token, String account) {
+        updateToken = token == null || token.isBlank() ? null : token;
+        updateAccount = updateToken == null ? null : account.toLowerCase(Locale.ROOT);
+    }
 
     String currentRelease() throws IOException {
         return read(root.resolve("app/client-manifest.json")).get("release").getAsString();
@@ -135,7 +139,8 @@ final class ClientUpdater {
         Path marker = root.resolve("updates/download-run.json");
         if (Files.isRegularFile(marker)) {
             JsonObject saved = read(marker);
-            if (release.equals(saved.get("release").getAsString())
+            if (saved.has("account") && updateAccount.equals(saved.get("account").getAsString())
+                    && release.equals(saved.get("release").getAsString())
                     && System.currentTimeMillis() - saved.get("createdAt").getAsLong() < 23 * 60 * 60_000L) {
                 Set<String> allowed = new HashSet<>();
                 saved.getAsJsonArray("files").forEach(item -> allowed.add(item.getAsString()));
@@ -152,6 +157,7 @@ final class ClientUpdater {
         JsonObject saved = new JsonObject();
         saved.addProperty("run", runId);
         saved.addProperty("release", release);
+        saved.addProperty("account", updateAccount);
         saved.add("files", needed);
         saved.addProperty("createdAt", System.currentTimeMillis());
         Files.createDirectories(marker.getParent());

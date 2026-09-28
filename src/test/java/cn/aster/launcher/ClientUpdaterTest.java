@@ -89,7 +89,7 @@ public final class ClientUpdaterTest {
             var updater = new ClientUpdater(root, URI.create("http://127.0.0.1:" + server.getAddress().getPort() + "/manifest.json"));
             try { updater.checkAndStage(s -> {}); throw new AssertionError("login required before update check"); }
             catch (java.io.IOException expected) { expect(expected.getMessage().contains("登录"), "pre-login update is denied"); }
-            updater.authorize("test-update-token");
+            updater.authorize("test-update-token", "Tester");
             var result = updater.checkAndStage(s -> {});
             expect(result.ready() && resumes.get() == 1 && requests.get() == 2 && starts.get() == 1 && completions.get() == 1,
                     "one authenticated update run downloads only two changed files and reports completion");
@@ -100,14 +100,17 @@ public final class ClientUpdaterTest {
             expect(downloaded == requests.get(), "prepared update reused without redownload");
             JsonArray pendingFiles = new JsonArray(); pendingFiles.add("files/game-content/mods/core.jar");
             write(root.resolve("updates/download-run.json"), "{\"run\":\"prior-run\",\"release\":\"1.0.0.3\","
-                    + "\"files\":[\"files/game-content/mods/core.jar\"],\"createdAt\":" + System.currentTimeMillis() + "}");
+                    + "\"account\":\"tester\",\"files\":[\"files/game-content/mods/core.jar\"],\"createdAt\":" + System.currentTimeMillis() + "}");
             int beforeResume = starts.get();
             var resumed = new ClientUpdater(root, URI.create("http://127.0.0.1:" + server.getAddress().getPort() + "/manifest.json"));
-            resumed.authorize("test-update-token");
+            resumed.authorize("test-update-token", "Tester");
             expect(resumed.resumeOrStartRun("1.0.0.3", pendingFiles, s -> {}).equals("prior-run")
                     && starts.get() == beforeResume, "restart reuses the previous authenticated download run");
             expect(resumed.resumeOrStartRun("1.0.0.3", new JsonArray(), s -> {}).equals("prior-run")
                     && starts.get() == beforeResume, "fully cached files retain the run for completion reporting");
+            resumed.authorize("test-update-token", "OtherPlayer");
+            expect(resumed.resumeOrStartRun("1.0.0.3", new JsonArray(), s -> {}) == null,
+                    "a different account cannot reuse the saved download run");
             Files.delete(root.resolve("updates/download-run.json"));
             ClientUpdater.deleteTree(root.resolve("app")); Files.move(root.resolve("app.next"), root.resolve("app"));
             Files.delete(root.resolve("updates/ready.ini"));
